@@ -80,12 +80,31 @@ public class TelegramController : ControllerBase
         
 
         var isYearly = command == "/year";
-        if (command != "/stats" && command != "/year") return;
+        if (command != "/stats" && !command.StartsWith("/stats ") && command != "/year") return;
 
-        var start = isYearly ? new DateTime(DateTime.UtcNow.Year, 1, 1) : new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
-        
+        DateTime start, end;
+        string periodLabel;
+
+        if (isYearly)
+        {
+            start = new DateTime(DateTime.UtcNow.Year, 1, 1);
+            end = start.AddYears(1);
+            periodLabel = "Έτους";
+        }
+        else
+        {
+            var cmdParts = command.Split(' ', 2);
+            int month = DateTime.UtcNow.Month;
+            if (cmdParts.Length == 2 && int.TryParse(cmdParts[1], out int parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12)
+                month = parsedMonth;
+
+            start = new DateTime(DateTime.UtcNow.Year, month, 1);
+            end = start.AddMonths(1);
+            periodLabel = start.ToString("MMMM yyyy");
+        }
+
         var stats = _context.Expenses
-            .Where(e => e.UserId == userId && e.Date >= start)
+            .Where(e => e.UserId == userId && e.Date >= start && e.Date < end)
             .GroupBy(e => e.Category)
             .Select(g => new { Cat = g.Key, Total = g.Sum(x => x.Amount) })
             .OrderByDescending(x => x.Total).ToList();
@@ -95,7 +114,7 @@ public class TelegramController : ControllerBase
             return;
         }
 
-        var report = $"📊 *Στατιστικά {(isYearly ? "Έτους" : "Μήνα")}*\n" + 
+        var report = $"📊 *Στατιστικά {periodLabel}*\n" +
                      string.Join("\n", stats.Select(s => $"🔹 {s.Cat}: {s.Total:N2}€")) +
                      $"\n\n💰 *Σύνολο: {stats.Sum(x => x.Total):N2}€*";
 
