@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +35,10 @@ if (!string.IsNullOrEmpty(jwtKey))
             };
         });
 }
+
+builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
+builder.Services.AddSingleton<ITelegramBotClient>(_ =>
+    new TelegramBotClient(builder.Configuration["Telegram:BotToken"]!));
 
 builder.Services.AddAuthorization();
 builder.Services.AddControllers();

@@ -1,143 +1,41 @@
+using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using ExpenseTrackerApi.Data;
-using ExpenseTrackerApi.Models;
+using ExpenseTrackerApi.Features.Telegram;
 
 namespace ExpenseTrackerApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class TelegramController : ControllerBase
+public class TelegramController(AppDbContext context, IConfiguration config, IMediator mediator, ITelegramBotClient botClient) : ControllerBase
 {
-    private readonly AppDbContext _context;
-    private readonly IConfiguration _config;
-    private readonly ITelegramBotClient _botClient;
-
-    public TelegramController(AppDbContext context, IConfiguration config)
-    {
-        _context = context;
-        _config = config;
-        _botClient = new TelegramBotClient(_config["Telegram:BotToken"]!);
-    }
-
     [HttpPost("webhook/{guid}")]
     public async Task<IActionResult> HandleUpdate(string guid, [FromBody] Update update)
     {
-        if (guid != _config["Telegram:WebhookGuid"]) 
+        if (guid != config["Telegram:WebhookGuid"])
             return Unauthorized("Invalid Webhook GUID");
 
-        var secretHeader = Request.Headers["X-Telegram-Bot-Api-Secret-Token"];
-        if (secretHeader != _config["Telegram:SecretToken"])
+        if (Request.Headers["X-Telegram-Bot-Api-Secret-Token"] != config["Telegram:SecretToken"])
             return Unauthorized("Invalid Secret Token");
 
-        if (update.Message?.Text == null) return Ok();
+        var chatId = update.CallbackQuery?.Message?.Chat.Id ?? update.Message?.Chat.Id ?? 0;
+        var user = context.Users.FirstOrDefault(u => u.TelegramChatId == chatId);
 
-        var chatId = update.Message.Chat.Id;
-        var text = update.Message.Text.Trim();
-
-        var user = _context.Users.FirstOrDefault(u => u.TelegramChatId == chatId);
         if (user == null)
         {
-            await _botClient.SendMessage(chatId, $"⚠️ Δεν είσαι εγγεγραμμένος. Chat ID: `{chatId}`", parseMode: ParseMode.Markdown);
+            if (update.Message != null)
+                await botClient.SendMessage(chatId, $"⚠️ Δεν είσαι εγγεγραμμένος. Chat ID: `{chatId}`", parseMode: ParseMode.Markdown);
             return Ok();
         }
 
-        if (text.StartsWith("/"))
-        {
-            await HandleCommands(chatId, user.Id, text.ToLower());
-        }
-        else
-        {
-            await ProcessExpense(chatId, user.Id, text);
-        }
+        if (update.CallbackQuery != null)
+            await mediator.Send(new HandleCallbackCommand(update.CallbackQuery, user.Id));
+        else if (update.Message?.Text != null)
+            await mediator.Send(new HandleMessageCommand(update.Message, user.Id));
 
         return Ok();
-    }
-
-    private async Task HandleCommands(long chatId, int userId, string command)
-    {
-        if (command == "/undo")
-        {
-            var lastExpense = _context.Expenses
-                .Where(e => e.UserId == userId)
-                .OrderByDescending(e => e.Date) 
-                .FirstOrDefault();
-
-            if (lastExpense == null)
-            {
-                await _botClient.SendMessage(chatId, "📭 Δεν βρέθηκε κάποιο έξοδο για να διαγραφεί.");
-                return;
-            }
-
-            _context.Expenses.Remove(lastExpense);
-            await _context.SaveChangesAsync();
-
-            await _botClient.SendMessage(chatId, $"🗑️ Διαγράφηκε το τελευταίο έξοδο: {lastExpense.Amount:N2}€ ({lastExpense.Category}).");
-            return;
-        }
-        
-
-        var isYearly = command == "/year";
-        if (command != "/stats" && !command.StartsWith("/stats ") && command != "/year") return;
-
-        DateTime start, end;
-        string periodLabel;
-
-        if (isYearly)
-        {
-            start = new DateTime(DateTime.UtcNow.Year, 1, 1);
-            end = start.AddYears(1);
-            periodLabel = "Έτους";
-        }
-        else
-        {
-            var cmdParts = command.Split(' ', 2);
-            int month = DateTime.UtcNow.Month;
-            if (cmdParts.Length == 2 && int.TryParse(cmdParts[1], out int parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12)
-                month = parsedMonth;
-
-            start = new DateTime(DateTime.UtcNow.Year, month, 1);
-            end = start.AddMonths(1);
-            periodLabel = start.ToString("MMMM yyyy");
-        }
-
-        var stats = _context.Expenses
-            .Where(e => e.UserId == userId && e.Date >= start && e.Date < end)
-            .GroupBy(e => e.Category)
-            .Select(g => new { Cat = g.Key, Total = g.Sum(x => x.Amount) })
-            .OrderByDescending(x => x.Total).ToList();
-
-        if (!stats.Any()) {
-            await _botClient.SendMessage(chatId, "📭 Δεν υπάρχουν έξοδα για αυτή την περίοδο.");
-            return;
-        }
-
-        var report = $"📊 *Στατιστικά {periodLabel}*\n" +
-                     string.Join("\n", stats.Select(s => $"🔹 {s.Cat}: {s.Total:N2}€")) +
-                     $"\n\n💰 *Σύνολο: {stats.Sum(x => x.Total):N2}€*";
-
-        await _botClient.SendMessage(chatId, report, parseMode: ParseMode.Markdown);
-    }
-
-    private async Task ProcessExpense(long chatId, int userId, string text)
-    {
-        var parts = text.Split(' ', 2);
-        if (parts.Length < 2 || !decimal.TryParse(parts[0], out decimal amount)) {
-            await _botClient.SendMessage(chatId, "❌ Γράψε: `Ποσό Κατηγορία` (π.χ. `10 Καφές`)", parseMode: ParseMode.Markdown);
-            return;
-        }
-
-        _context.Expenses.Add(new Expense {
-            UserId = userId,
-            Amount = amount,
-            Category = parts[1],
-            Description = "Telegram Bot",
-            Date = DateTime.UtcNow
-        });
-
-        await _context.SaveChangesAsync();
-        await _botClient.SendMessage(chatId, $"✅ Καταχωρήθηκε {amount:N2}€ στο '{parts[1]}'.");
     }
 }
