@@ -46,7 +46,7 @@ public class AuthController : ControllerBase
     {
         var user = _context.Users.SingleOrDefault(u => u.Username == request.Username);
 
-        if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+        if (user == null || user.PasswordHash == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
             return Unauthorized("Λάθος Username ή Password.");
 
         // Δημιουργούμε τα Tokens

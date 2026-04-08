@@ -19,7 +19,6 @@ public class HandleCallbackHandler(IMediator mediator, ITelegramBotClient botCli
 
         if (!callback.Data!.StartsWith("month_")) return;
 
-        // Delete the month picker message so it doesn't clutter the chat
         try { await botClient.DeleteMessage(chatId, callback.Message.MessageId, ct); } catch { }
 
         var month = int.Parse(callback.Data.Split('_')[1]);

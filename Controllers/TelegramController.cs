@@ -1,40 +1,42 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
-using Telegram.Bot;
 using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
-using ExpenseTrackerApi.Data;
+using ExpenseTrackerApi.Extensions;
+using ExpenseTrackerApi.Filters;
 using ExpenseTrackerApi.Features.Telegram;
 
 namespace ExpenseTrackerApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class TelegramController(AppDbContext context, IConfiguration config, IMediator mediator, ITelegramBotClient botClient) : ControllerBase
+public class TelegramController(IMediator mediator) : ControllerBase
 {
+    private static readonly HashSet<string> AdminCommands = ["/pending"];
+
     [HttpPost("webhook/{guid}")]
-    public async Task<IActionResult> HandleUpdate(string guid, [FromBody] Update update)
+    [ServiceFilter(typeof(TelegramWebhookFilter))]
+    public async Task<IActionResult> HandleUpdate([FromBody] Update update)
     {
-        if (guid != config["Telegram:WebhookGuid"])
-            return Unauthorized("Invalid Webhook GUID");
+        var user = HttpContext.GetTelegramUser();
 
-        if (Request.Headers["X-Telegram-Bot-Api-Secret-Token"] != config["Telegram:SecretToken"])
-            return Unauthorized("Invalid Secret Token");
-
-        var chatId = update.CallbackQuery?.Message?.Chat.Id ?? update.Message?.Chat.Id ?? 0;
-        var user = context.Users.FirstOrDefault(u => u.TelegramChatId == chatId);
-
-        if (user == null)
+        if (update.CallbackQuery != null)
         {
-            if (update.Message != null)
-                await botClient.SendMessage(chatId, $"⚠️ Δεν είσαι εγγεγραμμένος. Chat ID: `{chatId}`", parseMode: ParseMode.Markdown);
+            var data = update.CallbackQuery.Data ?? string.Empty;
+            if (user.IsAdmin && (data.StartsWith("approve_") || data.StartsWith("reject_")))
+                await mediator.Send(new HandleAdminCallbackCommand(update.CallbackQuery));
+            else
+                await mediator.Send(new HandleCallbackCommand(update.CallbackQuery, user.Id));
             return Ok();
         }
 
-        if (update.CallbackQuery != null)
-            await mediator.Send(new HandleCallbackCommand(update.CallbackQuery, user.Id));
-        else if (update.Message?.Text != null)
-            await mediator.Send(new HandleMessageCommand(update.Message, user.Id));
+        if (update.Message?.Text != null)
+        {
+            var text = update.Message.Text.Trim().ToLower();
+            if (user.IsAdmin && AdminCommands.Contains(text))
+                await mediator.Send(new HandleAdminMessageCommand(update.Message, user.Id));
+            else
+                await mediator.Send(new HandleMessageCommand(update.Message, user.Id));
+        }
 
         return Ok();
     }

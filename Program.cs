@@ -44,6 +44,7 @@ if (!string.IsNullOrEmpty(jwtKey))
 }
 
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
+builder.Services.AddScoped<ExpenseTrackerApi.Filters.TelegramWebhookFilter>();
 builder.Services.AddSingleton<ITelegramBotClient>(_ =>
     new TelegramBotClient(builder.Configuration["Telegram:BotToken"]!));
 
@@ -64,6 +65,14 @@ using (var scope = app.Services.CreateScope())
         db.Database.Migrate();
     }
 }
+
+app.UseExceptionHandler(err => err.Run(async ctx =>
+{
+    var ex = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+    ctx.Response.ContentType = "application/json";
+    ctx.Response.StatusCode = 500;
+    await ctx.Response.WriteAsJsonAsync(new { error = ex?.Error.Message, inner = ex?.Error.InnerException?.Message });
+}));
 
 app.UseSwagger();
 app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "ExpenseTracker v1"));
